@@ -1,0 +1,55 @@
+# MCP Server
+fastmcp>=0.1.0
+
+# REST API
+fastapi>=0.109.0
+python-multipart>=0.0.6
+uvicorn>=0.24.0
+
+# Data Validation
+pydantic>=2.0.0
+
+# Document Conversion
+markitdown[all]>=0.1.0
+
+# HTTP Client
+httpx>=0.27.0
+
+# File Type Detection
+python-magic>=0.4.27
+
+# Image Processing
+Pillow>=10.0.0
+
+# Logging
+structlog>=24.1.0
+
+# Retry Logic
+tenacity>=8.2.0
+uvloop
+
+# PDF Table Extraction
+pdfplumber>=0.10.0
+
+# Scanned Table Extraction (img2table Fallback, FR-MKIT-012)
+img2table>=1.2.0
+
+# PDF Metadata (Bookmarks, Annotations, Form Fields) (FR-MKIT-009)
+PyMuPDF>=1.23.0  # import name: fitz
+fitz  # virtual — provided by PyMuPDF, listed for import checker
+
+# Excel Processing (FR-MKIT-007)
+openpyxl>=3.1.0
+
+# Scanned PDF Rendering
+pdf2image>=1.16.0
+
+# Schema Validation
+jsonschema>=4.0.0
+
+# Audio/Video Transcription
+faster-whisper>=1.0.0
+
+pytest>=7.0.0
+python-docx>=1.0.0
+pandas>=2.0.0

@@ -1,0 +1,14 @@
+services:
+  markitdown-mcp:
+    build:
+      context: ./mcp
+    container_name: markitdown-mcp
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # MCP Server (SSE) — für Claude und MCP-Clients
+      - "18005:8080"
+      # REST API (FastAPI + Swagger) — für n8n und HTTP-Clients
+      - "18006:8081"
+    volumes:
+      - ./data:/data

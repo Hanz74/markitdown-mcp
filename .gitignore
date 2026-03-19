@@ -1,0 +1,16 @@
+.env
+*.yml~
+docker-compose.override.yml
+data/
+__pycache__/
+*.pyc
+.DS_Store
+CLAUDE.md
+PLAN.md
+.pytest_cache/
+test.txt
+update
+up.build
+mcp/__pycache__/
+mcp/tests/__pycache__/
+mcp/tests/.pytest_cache/
