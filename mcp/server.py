@@ -4310,71 +4310,40 @@ async def mcp_convert(
     filename: Optional[str] = None,
     url: Optional[str] = None,
     meta: Optional[dict] = None,
-) -> str:
-    """Konvertiert eine Datei zu Markdown (MCP-Version)."""
-    if path:
-        file_path = resolve_path(path)
-        if not file_path.exists():
-            return json.dumps({"success": False, "error": f"Datei nicht gefunden: {file_path}"})
-        file_data = file_path.read_bytes()
-        response = await convert_auto(
-            file_data=file_data,
-            filename=file_path.name,
-            source=str(file_path),
-            source_type="file",
-            input_meta=meta or {},
-        )
-    elif base64_data and filename:
-        try:
-            file_data = base64.b64decode(base64_data)
-        except Exception as e:
-            return json.dumps({"success": False, "error": f"Ungültiges Base64: {e}"})
-        response = await convert_auto(
-            file_data=file_data,
-            filename=filename,
-            source="base64",
-            source_type="base64",
-            input_meta=meta or {},
-        )
-    elif url:
-        result = await convert_url(url)
-        if result["success"]:
-            response = create_success_response(result["markdown"], meta={"source": url, "source_type": "url"})
-        else:
-            response = create_error_response(result.get("error_code", "ERROR"), result["error"])
-    else:
-        return json.dumps({"success": False, "error": "path, url oder (base64_data + filename) erforderlich"})
-
-    return response.model_dump_json()
-
-
-@mcp.tool(name="extract")
-async def mcp_extract(
-    extract_schema: dict,
-    path: Optional[str] = None,
-    base64_data: Optional[str] = None,
-    filename: Optional[str] = None,
-    url: Optional[str] = None,
+    accuracy: str = "standard",
+    classify: bool = False,
+    classify_categories: Optional[list] = None,
+    describe_images: bool = False,
+    ocr_correct: bool = False,
+    show_formulas: bool = False,
+    chunk: bool = False,
+    chunk_size: int = 512,
+    extract_schema: Optional[dict] = None,
     template: Optional[str] = None,
     language: str = "de",
-    meta: Optional[dict] = None,
+    prompt: Optional[str] = None,
 ) -> str:
     """
-    Konvertiert eine Datei zu Markdown UND extrahiert strukturierte Daten gemäß Schema (AC-014-6).
-
-    Kombiniert convert + schema-basierte Extraktion via Mistral LLM in einem Schritt.
-    Die Response enthält sowohl 'markdown' als auch 'extracted' (JSON passend zum Schema).
+    Konvertiert eine Datei zu Markdown (MCP-Version).
 
     Args:
-        extract_schema: JSON-Schema für die gewünschten extrahierten Felder.
-        path: Dateipfad im Container (alternativ zu base64_data oder url).
+        path: Dateipfad im Container.
         base64_data: Base64-kodierte Datei (erfordert filename).
         filename: Dateiname (erforderlich bei base64_data).
-        url: URL zu Datei oder Webseite (alternativ zu path/base64_data).
-        template: Vordefinierter Template-Name ('invoice', 'cv', 'contract') als
-                  Alternative zu extract_schema.
-        language: Antwortsprache ('de' oder 'en').
+        url: URL zu Datei oder Webseite.
         meta: Beliebige Metadaten (werden durchgereicht).
+        accuracy: Accuracy-Modus: 'standard' (Default) oder 'high'.
+        classify: Dokumenttyp via LLM klassifizieren.
+        classify_categories: Erlaubte Dokumenttypen (überschreibt Default).
+        describe_images: Eingebettete Bilder in DOCX/PPTX beschreiben.
+        ocr_correct: OCR-Nachkorrektur via LLM aktivieren.
+        show_formulas: Excel-Formeln im Output annotieren.
+        chunk: Smart Chunking für RAG aktivieren.
+        chunk_size: Maximale Chunk-Größe in Tokens (Default: 512).
+        extract_schema: JSON-Schema für strukturierte Daten-Extraktion.
+        template: Vordefinierter Template-Name als Alternative zu extract_schema.
+        language: Antwortsprache ('de' oder 'en').
+        prompt: Optionaler Custom-Prompt für Vision.
     """
     # Template → Schema Auflösung
     effective_schema = extract_schema
@@ -4397,8 +4366,133 @@ async def mcp_extract(
             source=str(file_path),
             source_type="file",
             input_meta=meta or {},
+            prompt=prompt,
+            language=language,
+            describe_images=describe_images,
+            classify=classify,
+            classify_categories=classify_categories,
+            extract_schema=effective_schema,
+            ocr_correct=ocr_correct,
+            show_formulas=show_formulas,
+            chunk=chunk,
+            chunk_size=chunk_size,
+            accuracy=accuracy,
+        )
+    elif base64_data and filename:
+        try:
+            file_data = base64.b64decode(base64_data)
+        except Exception as e:
+            return json.dumps({"success": False, "error": f"Ungültiges Base64: {e}"})
+        response = await convert_auto(
+            file_data=file_data,
+            filename=filename,
+            source="base64",
+            source_type="base64",
+            input_meta=meta or {},
+            prompt=prompt,
+            language=language,
+            describe_images=describe_images,
+            classify=classify,
+            classify_categories=classify_categories,
+            extract_schema=effective_schema,
+            ocr_correct=ocr_correct,
+            show_formulas=show_formulas,
+            chunk=chunk,
+            chunk_size=chunk_size,
+            accuracy=accuracy,
+        )
+    elif url:
+        result = await convert_url(url)
+        if result["success"]:
+            url_meta: dict[str, Any] = {"source": url, "source_type": "url"}
+            if result.get("title"):
+                url_meta["title"] = result["title"]
+            if classify:
+                classify_result = await classify_document(result["markdown"], classify_categories, language)
+                url_meta.update(classify_result)
+            response = create_success_response(result["markdown"], meta={**(meta or {}), **url_meta})
+            if effective_schema:
+                extraction = await extract_structured_data(result["markdown"], effective_schema, language)
+                if extraction["success"]:
+                    response.extracted = extraction["extracted"]
+                else:
+                    log.warning("mcp_convert_extract_failed_url", error=extraction.get("error"))
+            if chunk:
+                response.chunks = chunk_markdown(result["markdown"], chunk_size=chunk_size, source=url)
+        else:
+            response = create_error_response(result.get("error_code", "ERROR"), result["error"])
+    else:
+        return json.dumps({"success": False, "error": "path, url oder (base64_data + filename) erforderlich"})
+
+    return response.model_dump_json()
+
+
+@mcp.tool(name="extract")
+async def mcp_extract(
+    extract_schema: Optional[dict] = None,
+    path: Optional[str] = None,
+    base64_data: Optional[str] = None,
+    filename: Optional[str] = None,
+    url: Optional[str] = None,
+    template: Optional[str] = None,
+    language: str = "de",
+    meta: Optional[dict] = None,
+    accuracy: str = "standard",
+    ocr_correct: bool = False,
+    classify: bool = False,
+) -> str:
+    """
+    Konvertiert eine Datei zu Markdown UND extrahiert strukturierte Daten gemäß Schema (AC-014-6).
+
+    Kombiniert convert + schema-basierte Extraktion via Mistral LLM in einem Schritt.
+    Die Response enthält sowohl 'markdown' als auch 'extracted' (JSON passend zum Schema).
+
+    Args:
+        extract_schema: JSON-Schema für die gewünschten extrahierten Felder (optional wenn template gesetzt).
+        path: Dateipfad im Container (alternativ zu base64_data oder url).
+        base64_data: Base64-kodierte Datei (erfordert filename).
+        filename: Dateiname (erforderlich bei base64_data).
+        url: URL zu Datei oder Webseite (alternativ zu path/base64_data).
+        template: Vordefinierter Template-Name ('invoice', 'cv', 'contract') als
+                  Alternative zu extract_schema.
+        language: Antwortsprache ('de' oder 'en').
+        meta: Beliebige Metadaten (werden durchgereicht).
+        accuracy: Accuracy-Modus: 'standard' (Default) oder 'high'.
+        ocr_correct: OCR-Nachkorrektur via LLM aktivieren.
+        classify: Dokumenttyp via LLM klassifizieren.
+    """
+    # Template → Schema Auflösung
+    effective_schema = extract_schema
+    if template and not effective_schema:
+        if template not in EXTRACTION_TEMPLATES:
+            return json.dumps({
+                "success": False,
+                "error": f"Unbekanntes Template: '{template}'. Verfügbar: {list(EXTRACTION_TEMPLATES.keys())}"
+            })
+        effective_schema = EXTRACTION_TEMPLATES[template]
+
+    if not effective_schema:
+        return json.dumps({
+            "success": False,
+            "error": "Entweder 'extract_schema' oder 'template' muss angegeben werden"
+        })
+
+    if path:
+        file_path = resolve_path(path)
+        if not file_path.exists():
+            return json.dumps({"success": False, "error": f"Datei nicht gefunden: {file_path}"})
+        file_data = file_path.read_bytes()
+        response = await convert_auto(
+            file_data=file_data,
+            filename=file_path.name,
+            source=str(file_path),
+            source_type="file",
+            input_meta=meta or {},
             language=language,
             extract_schema=effective_schema,
+            accuracy=accuracy,
+            ocr_correct=ocr_correct,
+            classify=classify,
         )
     elif base64_data and filename:
         try:
@@ -4413,15 +4507,21 @@ async def mcp_extract(
             input_meta=meta or {},
             language=language,
             extract_schema=effective_schema,
+            accuracy=accuracy,
+            ocr_correct=ocr_correct,
+            classify=classify,
         )
     elif url:
         result = await convert_url(url)
         if result["success"]:
-            response = create_success_response(result["markdown"], meta={"source": url, "source_type": "url"})
-            if effective_schema:
-                extraction = await extract_structured_data(result["markdown"], effective_schema, language)
-                if extraction["success"]:
-                    response.extracted = extraction["extracted"]
+            url_meta: dict[str, Any] = {"source": url, "source_type": "url"}
+            if classify:
+                classify_result = await classify_document(result["markdown"], None, language)
+                url_meta.update(classify_result)
+            response = create_success_response(result["markdown"], meta={**(meta or {}), **url_meta})
+            extraction = await extract_structured_data(result["markdown"], effective_schema, language)
+            if extraction["success"]:
+                response.extracted = extraction["extracted"]
         else:
             response = create_error_response(result.get("error_code", "ERROR"), result["error"])
     else:
@@ -4434,12 +4534,21 @@ async def mcp_extract(
 async def mcp_convert_folder(
     path: str,
     meta: Optional[dict] = None,
+    language: str = "de",
 ) -> str:
-    """Konvertiert alle Dateien in einem Ordner zu Markdown."""
+    """
+    Konvertiert alle Dateien in einem Ordner zu Markdown.
+
+    Args:
+        path: Ordnerpfad im Container.
+        meta: Beliebige Metadaten (werden durchgereicht).
+        language: Antwortsprache ('de' oder 'en').
+    """
     folder_path = resolve_path(path)
     response = await convert_folder_contents(
         folder_path=folder_path,
         input_meta=meta or {},
+        language=language,
     )
     return response.model_dump_json()
 
