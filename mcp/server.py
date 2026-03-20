@@ -3524,9 +3524,9 @@ async def convert_auto(
             markdown = result["markdown"]
             pipeline_steps: list[str] = ["vision"]
 
-            # AC-015: OCR-Nachkorrektur via LLM (nur wenn aktiviert)
-            if ocr_correct:
-                log.info("ocr_correct_start", path="vision")
+            # AC-015: OCR-Nachkorrektur via LLM (T-MKIT-022: auch bei accuracy="high" automatisch aktiv)
+            if ocr_correct or accuracy == "high":
+                log.info("ocr_correct_start", path="vision", accuracy=accuracy)
                 correction = await correct_ocr_text(markdown, language=language)
                 if correction["success"]:
                     markdown = correction["corrected_text"]
@@ -3620,6 +3620,7 @@ async def convert_auto(
             meta["language"] = transcription.get("language", "unknown")
             meta["duration_seconds"] = transcription.get("duration", 0.0)
             meta["whisper_model"] = transcription.get("model_size", WHISPER_MODEL_SIZE)
+            meta["accuracy_mode"] = accuracy  # T-MKIT-022: accuracy_mode auch bei Audio/Video
 
             transcript_text = transcription.get("text", "")
             markdown = f"# Transkription\n\n{transcript_text}"
@@ -3927,7 +3928,7 @@ async def convert_folder_contents(
                 source=str(file_path),
                 source_type="file",
                 input_meta={},
-                language=language,
+                language=language,  # T-MKIT-022: language durchgereicht
             )
 
             if result.success:
@@ -4072,42 +4073,103 @@ async def api_convert(request: ConvertRequest) -> ConvertResponse:
             accuracy=request.accuracy,
         )
 
-    # URL
+    # URL — T-MKIT-022: durch convert_auto() routen für vollständige Pipeline
     if request.url:
-        start_time = time.time()
-        result = await convert_url(request.url)
-        meta = {
-            **request.meta,
-            "source": request.url,
-            "source_type": "url",
-            "duration_ms": int((time.time() - start_time) * 1000),
-        }
-        if result["success"]:
-            if result.get("title"):
-                meta["title"] = result["title"]
-            if request.classify:
-                classify_result = await classify_document(
-                    result["markdown"], request.classify_categories, request.language
+        import tempfile as _tempfile
+
+        # Content-Type → Extension ermitteln; HTML-Seiten direkt mit convert_url() (markitdown-native)
+        try:
+            async with httpx.AsyncClient(timeout=float(MISTRAL_TIMEOUT)) as client:
+                head_resp = await client.head(request.url, follow_redirects=True)
+                url_content_type = head_resp.headers.get("content-type", "text/html")
+        except Exception:
+            url_content_type = "text/html"
+
+        # Prüfen ob die URL eine HTML-Seite ist → alter Pfad (markitdown convert_url ist besser für HTML)
+        is_html = url_content_type.split(";")[0].strip() in (
+            "text/html", "application/xhtml+xml", "text/plain",
+        )
+
+        if is_html:
+            # Fallback: HTML-Seiten mit markitdown convert_url (strukturierter)
+            start_time = time.time()
+            result = await convert_url(request.url)
+            meta = {
+                **request.meta,
+                "source": request.url,
+                "source_type": "url",
+                "url": request.url,
+                "content_type": url_content_type,
+                "duration_ms": int((time.time() - start_time) * 1000),
+            }
+            if result["success"]:
+                if result.get("title"):
+                    meta["title"] = result["title"]
+                if request.classify:
+                    classify_result = await classify_document(
+                        result["markdown"], request.classify_categories, request.language
+                    )
+                    meta.update(classify_result)
+                response = create_success_response(result["markdown"], meta=meta)
+                if effective_schema:
+                    extraction = await extract_structured_data(result["markdown"], effective_schema, request.language)
+                    if extraction["success"]:
+                        response.extracted = extraction["extracted"]
+                    else:
+                        log.warning("extract_structured_data_failed_url_html", error=extraction.get("error"))
+                if request.chunk:
+                    response.chunks = chunk_markdown(result["markdown"], chunk_size=request.chunk_size, source=request.url)
+                return response
+            else:
+                return create_error_response(
+                    result.get("error_code", ErrorCode.CONVERSION_FAILED),
+                    result["error"],
+                    meta=meta
                 )
-                meta.update(classify_result)
-            response = create_success_response(result["markdown"], meta=meta)
-            # AC-014-2/AC-014-3: Strukturierte Extraktion für URL
-            if effective_schema:
-                extraction = await extract_structured_data(result["markdown"], effective_schema, request.language)
-                if extraction["success"]:
-                    response.extracted = extraction["extracted"]
-                else:
-                    log.warning("extract_structured_data_failed_url", error=extraction.get("error"))
-            # FR-MKIT-011: Smart Chunking für RAG
-            if request.chunk:
-                response.chunks = chunk_markdown(result["markdown"], chunk_size=request.chunk_size, source=request.url)
-            return response
         else:
-            return create_error_response(
-                result.get("error_code", ErrorCode.CONVERSION_FAILED),
-                result["error"],
-                meta=meta
-            )
+            # Nicht-HTML (PDF, DOCX, Bilder, …) → Inhalt laden und durch convert_auto() schicken
+            try:
+                async with httpx.AsyncClient(timeout=float(MISTRAL_TIMEOUT)) as client:
+                    dl_resp = await client.get(request.url, follow_redirects=True)
+                    dl_resp.raise_for_status()
+            except Exception as exc:
+                return create_error_response(
+                    ErrorCode.CONVERSION_FAILED,
+                    f"URL-Download fehlgeschlagen: {str(exc)}",
+                    meta=request.meta
+                )
+
+            raw_content_type = dl_resp.headers.get("content-type", url_content_type)
+            ct_base = raw_content_type.split(";")[0].strip()
+            guessed_ext = mimetypes.guess_extension(ct_base) or ".bin"
+            # mimetypes liefert manchmal .jpe statt .jpg — normalisieren
+            _ext_map = {".jpe": ".jpg", ".jpeg": ".jpg"}
+            guessed_ext = _ext_map.get(guessed_ext, guessed_ext)
+
+            url_hash = hashlib.md5(request.url.encode()).hexdigest()
+            temp_path = TEMP_DIR / f"url_{url_hash}{guessed_ext}"
+            temp_path.write_bytes(dl_resp.content)
+            try:
+                return await convert_auto(
+                    file_data=dl_resp.content,
+                    filename=temp_path.name,
+                    source=request.url,
+                    source_type="url",
+                    input_meta={**request.meta, "url": request.url, "content_type": raw_content_type},
+                    prompt=request.prompt,
+                    language=request.language,
+                    describe_images=request.describe_images,
+                    classify=request.classify,
+                    classify_categories=request.classify_categories,
+                    ocr_correct=request.ocr_correct,
+                    show_formulas=request.show_formulas,
+                    chunk=request.chunk,
+                    chunk_size=request.chunk_size,
+                    extract_schema=effective_schema,
+                    accuracy=request.accuracy,
+                )
+            finally:
+                temp_path.unlink(missing_ok=True)
 
     return create_error_response(
         ErrorCode.INTERNAL_ERROR,
@@ -4125,7 +4187,7 @@ async def api_convert_folder(request: ConvertFolderRequest) -> ConvertResponse:
     return await convert_folder_contents(
         folder_path=folder_path,
         input_meta=request.meta,
-        language="de",
+        language=request.language,
     )
 
 
@@ -4162,7 +4224,7 @@ async def api_extract(request: ExtractRequest) -> ConvertResponse:
             meta=request.meta
         )
 
-    # Konvertierungs-Request aus ExtractRequest aufbauen
+    # Konvertierungs-Request aus ExtractRequest aufbauen (T-MKIT-022: neue Felder durchreichen)
     convert_req = ConvertRequest(
         path=request.path,
         base64=request.base64,
@@ -4171,6 +4233,10 @@ async def api_extract(request: ExtractRequest) -> ConvertResponse:
         language=request.language,
         meta=request.meta,
         extract_schema=effective_schema,
+        accuracy=request.accuracy,
+        ocr_correct=request.ocr_correct,
+        describe_images=request.describe_images,
+        classify=request.classify,
     )
     return await api_convert(convert_req)
 

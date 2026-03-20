@@ -131,16 +131,20 @@ class TestAccuracyHighImage:
 
     def test_accuracy_high_image_with_schema(self):
         """
-        High-Accuracy + Schema bei Bild: vision + dual_pass + schema_extraction.
+        High-Accuracy + Schema bei Bild: vision + ocr_correct (auto bei high) + dual_pass + schema_extraction.
+
+        T-MKIT-022: accuracy='high' aktiviert correct_ocr_text() automatisch für Bilder,
+        daher brauchen wir 4 mock-Antworten statt 3.
         """
         schema = {"type": "object", "properties": {"name": {"type": "string"}}}
         vision_resp = _make_vision_response("# OCR")
+        ocr_correct_resp = _make_vision_response("# OCR<<<CORRECTIONS:0>>>")  # correct_ocr_text call (T-MKIT-022)
         dual_pass_resp = _make_vision_response("# Corrected")
         extract_resp = _make_vision_response('{"name": "Test"}')
 
         with patch.object(_server, "MISTRAL_API_KEY", "test-key"), \
              patch.object(_server, "call_mistral_vision_api", new=AsyncMock(
-                 side_effect=[vision_resp, dual_pass_resp, extract_resp]
+                 side_effect=[vision_resp, ocr_correct_resp, dual_pass_resp, extract_resp]
              )):
             result = run_async(convert_auto(**_make_convert_auto_kwargs(
                 accuracy="high",

@@ -198,6 +198,18 @@ class ExtractRequest(BaseModel):
     # Optionen
     language: str = Field("de", description="Sprache für Vision-Antwort: 'de', 'en'")
 
+    # Accuracy-Modus (T-MKIT-022)
+    accuracy: str = Field("standard", description="Accuracy-Modus: 'standard' oder 'high'")
+
+    # OCR-Korrektur (T-MKIT-022)
+    ocr_correct: bool = Field(False, description="OCR-Nachkorrektur via LLM aktivieren")
+
+    # Vision-Optionen (T-MKIT-022)
+    describe_images: bool = Field(False, description="Eingebettete Bilder durch Pixtral beschreiben")
+
+    # Klassifizierung (T-MKIT-022)
+    classify: bool = Field(False, description="Dokumenttyp automatisch klassifizieren")
+
     # Meta Pass-through
     meta: dict[str, Any] = Field(default_factory=dict, description="Beliebige Metadaten (werden durchgereicht)")
 
@@ -212,7 +224,6 @@ class ConvertFolderRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     path: str = Field(..., description="Ordnerpfad (relativ zu /data oder absolut)")
-    recursive: bool = Field(False, description="Unterordner einbeziehen?")
     language: str = Field(default="de", description="Sprache für Vision-Antwort: 'de', 'en'")
     meta: dict[str, Any] = Field(default_factory=dict, description="Beliebige Metadaten")
 
