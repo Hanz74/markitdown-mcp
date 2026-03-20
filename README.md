@@ -4,7 +4,7 @@
 
 Most document-to-Markdown tools work fine until you hand them a real-world file: a scanned invoice, a DOCX full of charts, an Excel with merged cells across 12 sheets, or a meeting recording. Then they silently fail, return empty text, or lose all structure. This service fixes that.
 
-Built on Microsoft's [markitdown](https://github.com/microsoft/markitdown), extended with Mistral OCR-3, Vision AI, audio transcription, and a hybrid routing engine that picks the best tool for each document — automatically. Two interfaces: **MCP server** (for Claude and AI agents) and **REST API** (for n8n, workflows, and custom integrations). 431 unit tests. Self-hosted in a single Docker container.
+Built on Microsoft's [markitdown](https://github.com/microsoft/markitdown), extended with Mistral OCR-3, Vision AI, audio transcription, and a hybrid routing engine that picks the best tool for each document — automatically. Two interfaces: **MCP server** (for Claude and AI agents) and **REST API** (for n8n, workflows, and custom integrations). 501 unit tests. Self-hosted in a single Docker container.
 
 ---
 
@@ -222,7 +222,7 @@ The architecture diagram was converted to Mermaid syntax (renderable in GitHub, 
 | Self-hosted | Yes | Yes | No (cloud only) | Yes (Docker, single container) |
 | Deployment complexity | Minimal | Heavy (PyTorch + models) | Cloud SaaS | Minimal (docker compose up) |
 | Pricing | Free | Open source / paid SaaS | Per-page API cost | API cost only (Mistral) |
-| Test coverage | — | — | — | 431 unit tests |
+| Test coverage | — | — | — | 501 unit tests |
 
 markitdown alone is a lightweight starting point. Unstructured.io is a heavy dependency tree (PyTorch, multiple model downloads) with no MCP interface. Azure and AWS document services are cloud-only, have per-page pricing, and require data to leave your infrastructure. This service is a single Docker container with a Mistral API key — self-hosted, MCP-native, and covering all the gaps.
 
@@ -1008,7 +1008,7 @@ cd mcp
 python3 -m pytest tests/ -v
 ```
 
-431 unit tests cover every feature: scanned PDF detection and OCR routing, cross-page table merging, image classification and type-specific conversion, audio transcription, Excel multi-sheet and chart extraction, DOCX extras, code block detection, LLM artifact stripping, quality scoring, smart chunking, the high-accuracy pipeline, and all configuration paths.
+501 unit tests cover every feature: scanned PDF detection and OCR routing, cross-page table merging, image classification and type-specific conversion, audio transcription, Excel multi-sheet and chart extraction, DOCX extras, code block detection, LLM artifact stripping, quality scoring, smart chunking, the high-accuracy pipeline, and all configuration paths.
 
 Test modules:
 
@@ -1040,7 +1040,7 @@ Test modules:
 
 | Version | Date | Highlights |
 |---------|------|-----------|
-| **2.0** | March 2026 | Document Intelligence Service — 20 features: PDF Intelligence (cross-page tables, scanned PDF detection, OCR-3, img2table, metadata), Vision Intelligence (embedded images, diagrams→Mermaid, charts→tables, OCR correction, artifact stripping), Format extensions (code blocks, audio/video, Excel enhanced, DOCX extras), Document Intelligence (classification, schema extraction, quality scoring, RAG chunking, high-accuracy pipeline). Mistral OCR-3 integration. 37 configurable ENV variables. 431 unit tests. |
+| **2.0** | March 2026 | Document Intelligence Service — 20 features: PDF Intelligence (cross-page tables, scanned PDF detection, OCR-3, img2table, metadata), Vision Intelligence (embedded images, diagrams→Mermaid, charts→tables, OCR correction, artifact stripping), Format extensions (code blocks, audio/video, Excel enhanced, DOCX extras), Document Intelligence (classification, schema extraction, quality scoring, RAG chunking, high-accuracy pipeline). Mistral OCR-3 integration. 37 configurable ENV variables. 501 unit tests. |
 | **0.3** | January 2026 | MCP + REST dual interface, Mistral Vision integration, folder conversion, retry logic, structured logging, URL conversion. |
 | **0.1** | December 2025 | Initial release — markitdown wrapper with basic MCP server. |
 

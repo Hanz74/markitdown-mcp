@@ -316,7 +316,7 @@ class TestOcr3Integration:
         assert result["success"] is True
         assert result["ocr_model"] == "mistral-ocr-2512"
         assert result["scanned"] is True
-        assert result["pages"] == 1
+        assert result["pages_processed"] == 1  # T-MKIT-023: unified to pages_processed
         assert result.get("vision_model") is None
 
 

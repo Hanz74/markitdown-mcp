@@ -4,7 +4,7 @@ MarkItDown MCP Server - Datenmodelle und Schemas
 
 from datetime import datetime
 from typing import Any, Optional
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 # =============================================================================
@@ -136,8 +136,8 @@ class ConvertRequest(BaseModel):
     url: Optional[str] = Field(None, description="URL zu Datei oder Webseite")
 
     # Optionen
-    password: Optional[str] = Field(None, description="Passwort für geschützte PDFs")
-    output_format: str = Field("markdown", description="Ausgabeformat: 'markdown', 'text', 'html'")
+    password: Optional[str] = Field(None, description="Passwort für geschützte PDFs")  # Reserved for future use
+    output_format: str = Field("markdown", description="Ausgabeformat: 'markdown', 'text', 'html'")  # Reserved for future use
 
     # Vision-spezifisch
     prompt: Optional[str] = Field(None, description="Custom Prompt für Vision-Analyse")
@@ -160,12 +160,19 @@ class ConvertRequest(BaseModel):
     # Accuracy-Modus (T-MKIT-020)
     accuracy: str = Field("standard", description="Accuracy-Modus: 'standard' oder 'high'. High aktiviert OCR-Correction und optional Dual-Pass Vision-Validierung")
 
+    @field_validator("accuracy")
+    @classmethod
+    def validate_accuracy(cls, v: str) -> str:
+        if v not in ("standard", "high"):
+            raise ValueError(f"accuracy must be 'standard' or 'high', got '{v}'")
+        return v
+
     # Excel-spezifisch (FR-MKIT-007)
     show_formulas: bool = Field(False, description="Excel-Formeln im Output anzeigen (z.B. 42 [=SUM(A1:A10)])")
 
     # Smart Chunking (FR-MKIT-011)
     chunk: bool = Field(False, description="Aktiviert Smart Chunking für RAG (Default: false)")
-    chunk_size: int = Field(512, description="Maximale Chunk-Größe in Tokens (Heuristik: len/4), Default: 512")
+    chunk_size: int = Field(512, ge=1, description="Maximale Chunk-Größe in Tokens (Heuristik: len/4), Default: 512")
 
     # Meta Pass-through
     meta: dict[str, Any] = Field(default_factory=dict, description="Beliebige Metadaten (werden durchgereicht)")
@@ -200,6 +207,13 @@ class ExtractRequest(BaseModel):
 
     # Accuracy-Modus (T-MKIT-022)
     accuracy: str = Field("standard", description="Accuracy-Modus: 'standard' oder 'high'")
+
+    @field_validator("accuracy")
+    @classmethod
+    def validate_accuracy(cls, v: str) -> str:
+        if v not in ("standard", "high"):
+            raise ValueError(f"accuracy must be 'standard' or 'high', got '{v}'")
+        return v
 
     # OCR-Korrektur (T-MKIT-022)
     ocr_correct: bool = Field(False, description="OCR-Nachkorrektur via LLM aktivieren")

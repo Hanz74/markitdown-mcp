@@ -7,7 +7,7 @@ except ImportError:
     pass
 
 """
-MarkItDown MCP + REST Server v0.3.0
+MarkItDown MCP + REST Server v2.0.0
 
 Bietet zwei Schnittstellen:
 - MCP (Port 8080): Für Claude und andere MCP-Clients
@@ -22,6 +22,7 @@ Features:
 - Strukturiertes Logging
 """
 
+import asyncio
 import os
 import io
 import json
@@ -195,7 +196,7 @@ WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 # Whisper-Modell-Cache (wird beim ersten Aufruf geladen)
 _whisper_model_cache: dict[str, Any] = {}  # key: model_size → WhisperModel instance
 
-VERSION = "0.3.0"
+VERSION = "2.0.0"
 START_TIME = time.time()
 
 
@@ -1230,7 +1231,7 @@ async def convert_scanned_pdf(file_path: Path, language: str = "de") -> dict[str
                 "success": True,
                 "markdown": ocr3_result["markdown"],
                 "scanned": True,
-                "pages": ocr3_result.get("pages", 0),
+                "pages_processed": ocr3_result.get("pages", 0),
                 "ocr_model": ocr3_result.get("ocr_model", MISTRAL_OCR_MODEL),
             }
         else:
@@ -2281,10 +2282,10 @@ def convert_with_markitdown(file_path: Path, show_formulas: bool = False) -> dic
 
 
 async def convert_url(url: str) -> dict[str, Any]:
-    """Konvertiert eine URL zu Markdown."""
+    """Konvertiert eine URL zu Markdown (non-blocking via asyncio.to_thread)."""
     try:
         log.info("url_convert", url=url)
-        result = md.convert_url(url)
+        result = await asyncio.to_thread(md.convert_url, url)
         return {
             "success": True,
             "markdown": result.text_content,
@@ -3423,6 +3424,40 @@ def chunk_markdown(markdown: str, chunk_size: int = 512, source: str = "") -> li
 
 
 # =============================================================================
+# Hilfsfunktion: PDF-Seite als Bild rendern (Dual-Pass Validierung)
+# =============================================================================
+
+def render_first_page_as_image(file_path: Path) -> Optional[tuple[bytes, str]]:
+    """Rendert die erste Seite eines PDFs als Bild für Dual-Pass Validierung.
+
+    Args:
+        file_path: Pfad zur PDF-Datei.
+
+    Returns:
+        Tuple (image_bytes, mimetype) oder None wenn nicht verfügbar/fehlgeschlagen.
+    """
+    try:
+        if not PDF2IMAGE_AVAILABLE:
+            return None
+        images = convert_from_path(str(file_path), dpi=PDF_RENDER_DPI, first_page=1, last_page=1)
+        if not images:
+            return None
+        first_page = images[0]
+        if first_page.width > IMAGE_MAX_WIDTH:
+            ratio = IMAGE_MAX_WIDTH / first_page.width
+            new_height = int(first_page.height * ratio)
+            first_page = first_page.resize(
+                (IMAGE_MAX_WIDTH, new_height), Image.Resampling.LANCZOS
+            )
+        buf = io.BytesIO()
+        first_page.save(buf, format="PNG")
+        return buf.getvalue(), "image/png"
+    except Exception as e:
+        log.warning("render_first_page_failed", error=str(e))
+        return None
+
+
+# =============================================================================
 # Core Konvertierungs-Logik
 # =============================================================================
 
@@ -3489,6 +3524,15 @@ async def convert_auto(
 
     # T-MKIT-020: Accuracy-Modus immer in Meta dokumentieren
     meta["accuracy_mode"] = accuracy
+
+    # T-MKIT-023: High-Accuracy ohne API-Key → Warning + Degradierung auf Standard
+    # Nur für Dateitypen die Mistral API nutzen (Bilder, PDFs) — nicht für Audio/Video (Whisper)
+    _needs_mistral_api = ext in IMAGE_EXTENSIONS or ext in MARKITDOWN_EXTENSIONS
+    if accuracy == "high" and not MISTRAL_API_KEY and _needs_mistral_api:
+        log.warning("high_accuracy_degraded_no_api_key")
+        meta["accuracy_warning"] = "High accuracy requested but MISTRAL_API_KEY not set — running in standard mode"
+        accuracy = "standard"
+        meta["accuracy_mode"] = accuracy
 
     # Bild → Vision
     if ext in IMAGE_EXTENSIONS or (mimetype and mimetype.startswith("image/")):
@@ -3666,7 +3710,7 @@ async def convert_auto(
                     meta["tokens_completion"] = result.get("tokens_completion")
                     meta["tokens_total"] = result.get("tokens_total")
                     meta["tokens_per_page"] = result.get("tokens_per_page")
-                    meta["pages_processed"] = result.get("pages_processed")
+                    meta["pages_processed"] = result.get("pages_processed") or result.get("pages")
                     if result.get("ocr_model"):
                         # OCR3-Pfad: kein Vision
                         meta["vision_used"] = False
@@ -3693,34 +3737,16 @@ async def convert_auto(
                     # T-MKIT-020: High-Accuracy → Dual-Pass Validation für gescannte PDFs
                     if accuracy == "high":
                         log.info("high_accuracy_scanned_pdf_dual_pass_start", file=filename)
-                        # Erste Seite als Bild rendern für Dual-Pass Validation
-                        if PDF2IMAGE_AVAILABLE:
-                            try:
-                                pdf_pages = convert_from_path(str(temp_path), dpi=PDF_RENDER_DPI, last_page=1)
-                                if pdf_pages:
-                                    first_page = pdf_pages[0]
-                                    if first_page.width > IMAGE_MAX_WIDTH:
-                                        ratio = IMAGE_MAX_WIDTH / first_page.width
-                                        new_height = int(first_page.height * ratio)
-                                        first_page = first_page.resize(
-                                            (IMAGE_MAX_WIDTH, new_height), Image.Resampling.LANCZOS
-                                        )
-                                    page_buf = io.BytesIO()
-                                    first_page.save(page_buf, format="PNG")
-                                    page_image_bytes = page_buf.getvalue()
-                                    scanned_markdown = await dual_pass_validate(
-                                        markdown=scanned_markdown,
-                                        file_data=page_image_bytes,
-                                        mimetype="image/png",
-                                        language=language,
-                                    )
-                                    scanned_pipeline_steps.append("dual_pass_validation")
-                            except Exception as dp_exc:
-                                log.warning(
-                                    "high_accuracy_scanned_pdf_dual_pass_failed",
-                                    file=filename,
-                                    error=str(dp_exc),
-                                )
+                        rendered = render_first_page_as_image(temp_path)
+                        if rendered is not None:
+                            page_image_bytes, page_mimetype = rendered
+                            scanned_markdown = await dual_pass_validate(
+                                markdown=scanned_markdown,
+                                file_data=page_image_bytes,
+                                mimetype=page_mimetype,
+                                language=language,
+                            )
+                            scanned_pipeline_steps.append("dual_pass_validation")
                         else:
                             log.warning("high_accuracy_scanned_pdf_dual_pass_skipped_no_pdf2image")
 
@@ -3796,33 +3822,16 @@ async def convert_auto(
                 # T-MKIT-020: High-Accuracy → Dual-Pass Validation für PDFs und Bilder
                 if accuracy == "high" and ext == ".pdf":
                     log.info("high_accuracy_pdf_dual_pass_start", file=filename)
-                    if PDF2IMAGE_AVAILABLE:
-                        try:
-                            pdf_pages = convert_from_path(str(temp_path), dpi=PDF_RENDER_DPI, last_page=1)
-                            if pdf_pages:
-                                first_page = pdf_pages[0]
-                                if first_page.width > IMAGE_MAX_WIDTH:
-                                    ratio = IMAGE_MAX_WIDTH / first_page.width
-                                    new_height = int(first_page.height * ratio)
-                                    first_page = first_page.resize(
-                                        (IMAGE_MAX_WIDTH, new_height), Image.Resampling.LANCZOS
-                                    )
-                                page_buf = io.BytesIO()
-                                first_page.save(page_buf, format="PNG")
-                                page_image_bytes = page_buf.getvalue()
-                                markdown = await dual_pass_validate(
-                                    markdown=markdown,
-                                    file_data=page_image_bytes,
-                                    mimetype="image/png",
-                                    language=language,
-                                )
-                                markitdown_pipeline_steps.append("dual_pass_validation")
-                        except Exception as dp_exc:
-                            log.warning(
-                                "high_accuracy_pdf_dual_pass_failed",
-                                file=filename,
-                                error=str(dp_exc),
-                            )
+                    rendered = render_first_page_as_image(temp_path)
+                    if rendered is not None:
+                        page_image_bytes, page_mimetype = rendered
+                        markdown = await dual_pass_validate(
+                            markdown=markdown,
+                            file_data=page_image_bytes,
+                            mimetype=page_mimetype,
+                            language=language,
+                        )
+                        markitdown_pipeline_steps.append("dual_pass_validation")
                     else:
                         log.warning("high_accuracy_pdf_dual_pass_skipped_no_pdf2image")
 
@@ -4101,6 +4110,7 @@ async def api_convert(request: ConvertRequest) -> ConvertResponse:
                 "url": request.url,
                 "content_type": url_content_type,
                 "duration_ms": int((time.time() - start_time) * 1000),
+                "accuracy_mode": request.accuracy,
             }
             if result["success"]:
                 if result.get("title"):
